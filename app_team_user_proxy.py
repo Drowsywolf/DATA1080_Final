@@ -19,6 +19,11 @@ from autogen_ext.agents.web_surfer import MultimodalWebSurfer
 from autogen_agentchat.agents import UserProxyAgent, AssistantAgent
 from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination
 
+from langchain_groq import ChatGroq
+import backoff
+import openai
+
+
 
 async def user_input_func(prompt: str, cancellation_token: CancellationToken | None = None) -> str:
     """Get user input from the UI for the user proxy agent."""
@@ -56,12 +61,14 @@ async def user_action_func(prompt: str, cancellation_token: CancellationToken | 
 @cl.on_chat_start  # type: ignore
 async def start_chat() -> None:
     # Load model configuration and create the model client.
-    with open("model_config.yaml", "r") as f:
-        model_config = yaml.safe_load(f)
+    # with open("model_config.yaml", "r") as f:
+    #     model_config = yaml.safe_load(f)
     # model_client = ChatCompletionClient.load_component(model_config)
     gpt_model = "gpt-4o-mini"
     # gpt_model = "gpt-4.1-mini-2025-04-14"
     model_client = OpenAIChatCompletionClient(model=gpt_model, max_tokens=300)
+    
+
 
     # # Create the assistant agent.
     # assistant = AssistantAgent(
@@ -163,17 +170,17 @@ async def set_starts() -> List[cl.Starter]:
             "The final plan should include the following information: place of departure(from which city, country), destination, travel dates(schedule), accommodation, activities(things to do), and budget. " \
             "First, ask the user for place of departure(from which city, country). This is mendatory infomation the user need to answer, so you need to keep asking until the user answers this. " \
             "Second, ask the user for destination, travel dates(schedule) and expected budget. Ask the usr for these one by one, and give 3 recommendation options along with your ask. " \
-            # "Accommodation, activities(things to do), the information you need to provide for the user. " \
-            # "You need to search for the activities, accommodations and flight(or other travel tools) separately, and the calculate the budget accordingly." \
+            "Accommodation, activities(things to do), the information you need to provide for the user. " \
+            "You need to search for the activities, accommodations and flight(or other travel tools) separately, and the calculate the budget accordingly." \
             "Finally, you need to provide a summary of the travel plan. "
         ),
     ]
 
-
+@backoff.on_exception(backoff.expo, openai.RateLimitError)
 @cl.on_message  # type: ignore
 async def chat(message: cl.Message) -> None:
     # Get the team from the user session.
-    team = cast(RoundRobinGroupChat, cl.user_session.get("team"))  # type: ignore
+    team = cast(MagenticOneGroupChat, cl.user_session.get("team"))  # type: ignore
     # Streaming response message.
     streaming_response: cl.Message | None = None
     # Stream the messages from the team.
