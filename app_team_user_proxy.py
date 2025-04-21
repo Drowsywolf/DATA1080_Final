@@ -19,7 +19,7 @@ from autogen_ext.agents.web_surfer import MultimodalWebSurfer
 from autogen_agentchat.agents import UserProxyAgent, AssistantAgent
 from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination
 
-from langchain_groq import ChatGroq
+
 import backoff
 import openai
 
@@ -60,75 +60,51 @@ async def user_action_func(prompt: str, cancellation_token: CancellationToken | 
 
 @cl.on_chat_start  # type: ignore
 async def start_chat() -> None:
-    # Load model configuration and create the model client.
-    # with open("model_config.yaml", "r") as f:
-    #     model_config = yaml.safe_load(f)
-    # model_client = ChatCompletionClient.load_component(model_config)
+
     gpt_model = "gpt-4o-mini"
     # gpt_model = "gpt-4.1-mini-2025-04-14"
-    model_client = OpenAIChatCompletionClient(model=gpt_model, max_tokens=300)
-    
 
+    model_client = OpenAIChatCompletionClient(model=gpt_model)
 
-    # # Create the assistant agent.
-    # assistant = AssistantAgent(
-    #     name="assistant",
-    #     model_client=model_client,
-    #     system_message="You are a helpful assistant.",
-    #     model_client_stream=True,  # Enable model client streaming.
-    # )
-
-    # # Create the critic agent.
-    # critic = AssistantAgent(
-    #     name="critic",
-    #     model_client=model_client,
-    #     system_message="You are a critic. Provide constructive feedback. "
-    #     "Respond with 'APPROVE' if your feedback has been addressed.",
-    #     model_client_stream=True,  # Enable model client streaming.
-    # )
-
-    # # Create the user proxy agent.
-    # user = UserProxyAgent(
-    #     name="user",
-    #     # input_func=user_input_func, # Uncomment this line to use user input as text.
-    #     input_func=user_action_func,  # Uncomment this line to use user input as action.
-    # )
-
-    # # Termination condition.
-    # termination = TextMentionTermination("APPROVE", sources=["user"])
-
-    # # Chain the assistant, critic and user agents using RoundRobinGroupChat.
-    # group_chat = RoundRobinGroupChat([assistant, critic, user], termination_condition=termination)
-
+    # Create agents
     agents = []
 
     user = UserProxyAgent(
         name="User", 
         description="The user agent.",
-        input_func=user_input_func,  # Use the user input function.
         )
     agents.append(user)
     
     surfer1 = MultimodalWebSurfer(
-        name="WebSurfer1",
+        name="ActivityAdvisor",
         model_client=model_client, 
-        description="A web surfer agent that search for things to do in the destination. It also need to return the booking fee for each activity.",
+        #description="A web surfer agent that search for things to do in the destination. It also need to return the booking fee for each activity.",
+        description = '''List popular activities available at the destination and provide an estimated cost range for each activity. 
+                        Think step-by-step: identify activities first, then estimate typical costs. If cost information is unavailable, note it clearly. 
+                        Example: - Activity: City Sightseeing Tour, Cost: $50-70 - Activity: Museum Visit, Cost: $10-20.''',
         start_page="https://www.tripadvisor.com/", 
     )
     agents.append(surfer1)
 
     surfer2 = MultimodalWebSurfer(
-        name="WebSurfer2",
+        name="AccomadationAdvisor",
         model_client=model_client, 
-        description="A web surfer agent that search for accommodation in the destination. It also need to return the booking fee for each accommodation.",
+        #description="A web surfer agent that search for accommodation in the destination. It also need to return the booking fee for each accommodation.",
+        description = '''Search for accommodation options in the destination and provide the booking fee for each. 
+                        Think step-by-step: find several hotel or lodging options, then retrieve and list their booking prices. Include the name and a short description for each accommodation. 
+                        Example: - Hotel: Grand Palace Hotel, Booking Fee: $120/night - Hostel: City Center Backpackers, Booking Fee: $35/night.''',
+
         start_page="https://www.tripadvisor.com/", 
     )
     agents.append(surfer2)
 
     surfer3 = MultimodalWebSurfer(
-        name="WebSurfer3",
+        name="FlightsearchAgent",
         model_client=model_client, 
-        description="A web surfer agent that search for flight tickets(or other travel tools) in the destination. It also need to return the booking fee for each flight(or other travel methods).",
+        #description="A web surfer agent that search for flight tickets(or other travel tools) in the destination. It also need to return the booking fee for each flight(or other travel methods).",
+        description = '''Search for available flight tickets or other transportation methods to the destination, and provide the booking fee for each option. 
+                        Think step-by-step: first find several transportation options, then retrieve their prices. Include departure location, transportation type, and cost. 
+                        Example: - Flight: New York to Paris, Airline: Air France, Booking Fee: $650 - Train: London to Paris, Booking Fee: $120.''',
         start_page="https://www.tripadvisor.com/",
     )
     agents.append(surfer3)
@@ -139,14 +115,14 @@ async def start_chat() -> None:
         description="A helpful assistant agent that prints out the options.",
         # tools=
     )
-    # agents.append(assistant)
+    agents.append(assistant)
 
     cond1 = TextMentionTermination("TERMINATE")
-    group_chat = MagenticOneGroupChat(agents, model_client=model_client, termination_condition=cond1)
+    team = MagenticOneGroupChat(agents, model_client=model_client, termination_condition=cond1)
 
     # Set the assistant agent in the user session.
     cl.user_session.set("prompt_history", "")  # type: ignore
-    cl.user_session.set("team", group_chat)  # type: ignore
+    cl.user_session.set("team", team)  # type: ignore
 
 
 @cl.set_starters  # type: ignore
@@ -166,13 +142,105 @@ async def set_starts() -> List[cl.Starter]:
         # ),
         cl.Starter(
             label="Travel Itinerary",
-            message="Plan a travel itinerary. " \
-            "The final plan should include the following information: place of departure(from which city, country), destination, travel dates(schedule), accommodation, activities(things to do), and budget. " \
-            "First, ask the user for place of departure(from which city, country). This is mendatory infomation the user need to answer, so you need to keep asking until the user answers this. " \
-            "Second, ask the user for destination, travel dates(schedule) and expected budget. Ask the usr for these one by one, and give 3 recommendation options along with your ask. " \
-            "Accommodation, activities(things to do), the information you need to provide for the user. " \
-            "You need to search for the activities, accommodations and flight(or other travel tools) separately, and the calculate the budget accordingly." \
-            "Finally, you need to provide a summary of the travel plan. "
+            message="""
+            Task: Plan a Travel Itinerary
+
+            You will generate a detailed travel itinerary including the following information:
+            - Place of Departure (city, country)
+            - Destination
+            - Travel Dates (schedule)
+            - Accommodation
+            - Activities (things to do)
+            - Budget
+
+            Use the Chain-of-Thought method by completing each task step-by-step, explicitly reasoning at each step. Provide a few-shot example for guidance.
+
+            Step-by-Step Instruction:
+
+            Step 1: Mandatory Information Collection
+            First, ask the user explicitly:
+            "Please tell me your place of departure (city and country). This is mandatory information to start planning your itinerary."
+
+            Reasoning: The itinerary cannot be planned without knowing the starting location. Ensure the user provides this information clearly.
+
+            Few-shot Example:
+            Agent: Please tell me your place of departure (city and country). This is mandatory information.
+            User: Boston, USA
+
+            Step 2: Collect Additional Travel Information (with Recommendations)
+            Next, sequentially ask the user for destination, travel dates, and expected budget. When asking each question, always provide 3 recommendation options.
+
+            Reasoning: Providing options helps users make quicker and informed decisions.
+
+            Few-shot Example:
+            Agent: Where would you like to travel? Here are three popular recommendations:
+            1. San Francisco, USA
+            2. New York City, USA
+            3. Miami, USA
+            User: I'd like to go to San Francisco, USA.
+
+            Agent: Great choice! What dates are you planning for your travel? Here are three recommended timeframes:
+            1. May 20 - May 27
+            2. June 10 - June 17
+            3. July 15 - July 22
+            User: June 10 - June 17
+
+            Agent: What's your expected budget for the entire trip? Here are three typical budget ranges:
+            1. Economy: $1,000 - $1,500
+            2. Moderate: $1,500 - $2,500
+            3. Luxury: $2,500+
+            User: Moderate, around $2,000
+
+            Step 3: Generate Activities and Accommodations
+            Use web search to identify suitable activities at the destination and accommodations based on the user's preferences and budget constraints. Clearly state your search criteria.
+
+            Reasoning: To provide accurate recommendations, you need to align activities and accommodations with the user's budget and interests.
+
+            Few-shot Example:
+            Agent Search Criteria:
+            - Destination: San Francisco, USA
+            - Dates: June 10 - June 17
+            - Budget: Moderate (~$2,000)
+            - Activities: Popular tourist spots, cultural experiences
+            - Accommodations: Mid-range hotels or Airbnb
+
+            Sample Agent Output:
+            Activities:
+            1. Visit Golden Gate Bridge (Free)
+            2. Alcatraz Island Tour ($40)
+            3. Exploratorium ($30)
+
+            Accommodation Recommendation:
+            1. Holiday Inn Golden Gateway ($180/night)
+            2. Airbnb near Fisherman's Wharf ($150/night)
+
+            Step 4: Calculate and Present Budget Clearly
+            Calculate the total expected cost based on accommodation, activities, transportation, and daily expenses clearly.
+
+            Reasoning: Users appreciate transparency and a clear breakdown of expenses.
+
+            Few-shot Example:
+            Budget Breakdown:
+            - Flights (Round-trip): $400
+            - Accommodation (7 nights x $150): $1,050
+            - Activities: $70
+            - Meals and Miscellaneous: $400
+            - Total: ~$1,920
+
+            Step 5: Final Travel Plan Summary
+            Provide a concise and comprehensive summary of the travel itinerary.
+
+            Reasoning: Summaries help users quickly understand and confirm the overall plan.
+
+            Few-shot Example:
+            Summary:
+            - Departure: Boston, USA
+            - Destination: San Francisco, USA
+            - Dates: June 10 - June 17
+            - Accommodation: Airbnb near Fisherman's Wharf
+            - Activities: Golden Gate Bridge, Alcatraz Tour, Exploratorium
+            - Total Budget: ~$1,920
+            """
         ),
     ]
 
