@@ -190,9 +190,9 @@ async def start_chat() -> None:
             model_client=model_client,
             #description="A web surfer agent that search for things to do in the destination. It also need to return the booking fee for each activity.",
             description = '''
-            You are a web agent looking for pricing information on a webpage. Your input is a URL.
-
-            Scroll the page if necessary and extract any numeric values that represent prices for tickets, activities, or bookings.
+            You are a web agent looking for pricing information on. 
+            
+            You need to use web_search to find the web page of activities, hotels and flights, use summarize_page to summarize the page and extract the price information, and use sleep in the end each time.
 
             Return the prices found in this format:
             {
@@ -295,12 +295,12 @@ async def set_starts() -> List[cl.Starter]:
     User: Moderate, around $2,000
 
     Step 3: Generate Activities and Accommodations
-    Now, you must use the attraction recommender to produce a list of attractions the user approves.
-    Then, give the approved list to the attraction link finder and request it to search for them one by one, only accept the search
-    results as links. Save the links. Then, using the destination, ask the hotel link finder to find appropriate accomodations and flights links
-    Only accept the name and link of the results. Save the links and pass flight links to flight finder, pass hotel links to
-    finder for flights.Pass the generated links to activity pricer and ask it to go through it one by one.
-    Save all information regarding pricing and pass to budget checker.
+    Now, you must use the AttractionRecommender to produce a list of attractions the user approves.
+    Then, give the approved list to the AttractionLinkFinder and request it to search for them one by one, only accept the search
+    results as links. Save the links. Then, using the destination, ask the HotelLinkFinder to find appropriate accomodations and flights links
+    Only accept the name and link of the results. Save the links and pass flight links to FlightLinkFinder, pass hotel links to
+    finder for flights. Ask ActivityPricer about the price and go through it one by one.
+    Save all information regarding pricing and pass to BudgetController.
 
     Reasoning: To provide accurate recommendations, you need to align activities and accommodations with the user's budget and interests.
 
@@ -322,6 +322,9 @@ async def set_starts() -> List[cl.Starter]:
     1. Holiday Inn Golden Gateway ($180/night)
     2. Airbnb near Fisherman's Wharf ($150/night)
 
+    Would you like to proceed with this plan? (yes/no)
+    User: Yes
+
     Step 4: Calculate and Present Budget Clearly
     Calculate the total expected cost based on accommodation, activities, transportation, and daily expenses clearly.
 
@@ -334,23 +337,28 @@ async def set_starts() -> List[cl.Starter]:
     - Activities: $70
     - Meals and Miscellaneous: $400
     - Total: ~$1,920
+    Would you like to proceed with this plan? (yes/no)
+    User: Yes
 
     Step 5: Final Travel Plan Summary
-    Provide a concise and comprehensive summary of the travel itinerary, then send to schedule making agent for final itinerary.
+    Provide a concise and comprehensive summary of the travel itinerary, ask if the user approve of the summary, then send to schedule making agent for final itinerary.
 
     Reasoning: Summaries help users quickly understand and confirm the overall plan.
 
     Few-shot Example:
-    Summary:
+    Agent:
+    Here is your travel itinerary summary:
     - Departure: Boston, USA
     - Destination: San Francisco, USA
     - Dates: June 10 - June 17
-    - Accommodation: Airbnb near Fisherman’s Wharf
+    - Accommodation: Airbnb near Fisherman's Wharf
     - Activities: Golden Gate Bridge, Alcatraz Tour, Exploratorium
     - Total Budget: ~$1,920
+    Would you like to proceed with this plan? (yes/no)
+    User: Yes
 
     Step 6:
-    Show final itinerary for user approval
+    Show final itinerary for user approval.
     Reasoning - the final result should align with the user's preferences
     """
         ),
