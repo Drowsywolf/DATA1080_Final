@@ -264,7 +264,7 @@ async def set_starts() -> List[cl.Starter]:
     First, ask the user explicitly:
     "Please tell me your place of departure (city and country). This is mandatory information to start planning your itinerary."
 
-    Reasoning: The itinerary cannot be planned without knowing the starting location. Ensure the user provides this information clearly.
+    Reasoning: The itinerary cannot be planned without knowing the starting location. Ensure the user provides this information clearly. Do not excute this step after the user gives a feasible answer.
 
     Few-shot Example:
     Agent: Please tell me your place of departure (city and country). This is mandatory information.
@@ -273,7 +273,7 @@ async def set_starts() -> List[cl.Starter]:
     Step 2: Collect Additional Travel Information (with Recommendations)
     Next, sequentially ask the user for destination, travel dates, and expected budget. When asking each question, always provide 3 recommendation options.
 
-    Reasoning: Providing options helps users make quicker and informed decisions.
+    Reasoning: Providing options helps users make quicker and informed decisions. Do not excute this step after the user gives a feasible answer.
 
     Few-shot Example:
     Agent: Where would you like to travel? Here are three popular recommendations:
@@ -283,10 +283,10 @@ async def set_starts() -> List[cl.Starter]:
     User: I'd like to go to San Francisco, USA.
 
     Agent: Great choice! What dates are you planning for your travel? Here are three recommended timeframes:
-    1. May 20 - May 27
-    2. June 10 - June 17
-    3. July 15 - July 22
-    User: June 10 - June 17
+    1. May 20 - May 22
+    2. June 10 - June 15
+    3. July 15 - July 29
+    User: June 10 - June 11
 
     Agent: What's your expected budget for the entire trip? Here are three typical budget ranges:
     1. Economy: $1,000 - $1,500
@@ -295,12 +295,13 @@ async def set_starts() -> List[cl.Starter]:
     User: Moderate, around $2,000
 
     Step 3: Generate Activities and Accommodations
-    Now, you must use the AttractionRecommender to produce a list of attractions the user approves.
-    Then, give the approved list to the AttractionLinkFinder and request it to search for them one by one, only accept the search
+    Now, you must use the AttractionRecommender agent to produce a list of attractions(up to 5 attractions). Ask if the user approves of the list. Regenerate the list if the user does not approve.
+    Then, give the list to the AttractionLinkFinder agent and request it to search for them one by one, only accept the search
     results as links. Save the links. Then, using the destination, ask the HotelLinkFinder to find appropriate accomodations and flights links
     Only accept the name and link of the results. Save the links and pass flight links to FlightLinkFinder, pass hotel links to
     finder for flights. Ask ActivityPricer about the price and go through it one by one.
-    Save all information regarding pricing and pass to BudgetController.
+    Save all information regarding pricing and pass to BudgetController. 
+    Remember to ask for the user's approval before proceeding.
 
     Reasoning: To provide accurate recommendations, you need to align activities and accommodations with the user's budget and interests.
 
@@ -331,6 +332,7 @@ async def set_starts() -> List[cl.Starter]:
     Reasoning: Users appreciate transparency and a clear breakdown of expenses.
 
     Few-shot Example:
+    Agent:
     Budget Breakdown:
     - Flights (Round-trip): $400
     - Accommodation (7 nights x $150): $1,050
@@ -352,13 +354,17 @@ async def set_starts() -> List[cl.Starter]:
     - Destination: San Francisco, USA
     - Dates: June 10 - June 17
     - Accommodation: Airbnb near Fisherman's Wharf
-    - Activities: Golden Gate Bridge, Alcatraz Tour, Exploratorium
+    - Activities: 
+            Golden Gate Bridge[Link1: ...], 
+            Alcatraz Tour[Link2: ...], 
+            Exploratorium[Link3: ...], 
+            ...
     - Total Budget: ~$1,920
     Would you like to proceed with this plan? (yes/no)
     User: Yes
 
     Step 6:
-    Show final itinerary for user approval.
+    Show final itinerary, and then ask if the user wants any changes.
     Reasoning - the final result should align with the user's preferences
     """
         ),
