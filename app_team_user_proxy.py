@@ -12,18 +12,93 @@ from autogen_agentchat.teams import RoundRobinGroupChat
 from autogen_core import CancellationToken
 from autogen_core.models import ChatCompletionClient
 
+import asyncio
+import nest_asyncio
 from autogen_ext.models.openai import OpenAIChatCompletionClient
 from autogen_agentchat.teams import MagenticOneGroupChat
 from autogen_agentchat.ui import Console
 from autogen_ext.agents.web_surfer import MultimodalWebSurfer
 from autogen_agentchat.agents import UserProxyAgent, AssistantAgent
-from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination
-
-
+from autogen_agentchat.conditions import MaxMessageTermination, TextMentionTermination, ExternalTermination
 import backoff
 import openai
 
+from autogen_core.tools import FunctionTool
+from typing_extensions import Annotated
 
+from playwright.async_api import async_playwright
+from serpapi import GoogleSearch
+import re
+import requests
+from bs4 import BeautifulSoup
+from statistics import median
+from typing import List, Dict, Annotated
+serp_api_key = "bd03bd408c8ff7a6d4a6de3eafc5d5f8568d8cba659ea02c14b913733abddb2b"
+gpt_model = "gpt-4o-mini"
+
+def search_booking_info(query: str) -> dict:
+    """Search for booking info (activity/hotel/flight) and return name, link, cost, and note."""
+    search = GoogleSearch({
+        "q": query,
+        "api_key": "bd03bd408c8ff7a6d4a6de3eafc5d5f8568d8cba659ea02c14b913733abddb2b",
+        "hl": "en",
+        "gl": "us"
+    })
+    results = search.get_dict()
+
+    booking_info = {
+        "activity": query,
+        "link": "",
+        "cost": "",
+        "note": "No relevant link found"
+    }
+
+    top_link = ""
+    for result in results.get("organic_results", []):
+        link = result.get("link", "")
+        if any(domain in link for domain in [
+            "viator.com", "getyourguide.com", "booking.com",
+            "expedia.com", "trip.com", "kayak.com"
+        ]):
+            top_link = link
+            break
+
+    if not top_link:
+        return booking_info
+
+    try:
+        response = requests.get(top_link, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
+        soup = BeautifulSoup(response.text, "html.parser")
+        text = soup.get_text(" ", strip=True)
+
+
+        prices = re.findall(r'[$€£]\s?(\d{1,4})', text)
+        prices = [int(p) for p in prices]
+
+        if prices:
+            prices.sort()
+            med = median(prices)
+            booking_info["cost"] = f"${min(prices)}–${max(prices)}"
+            booking_info["note"] = f"Estimated from {len(prices)} prices, median ≈ ${int(med)}"
+        else:
+            booking_info["note"] = "No prices found on page"
+
+        booking_info["link"] = top_link
+        return booking_info
+
+    except Exception as e:
+        booking_info["note"] = f"Error scraping: {str(e)}"
+        return booking_info
+
+search_tool = FunctionTool(
+    name="search_booking_info",
+    func=search_booking_info,
+    description="Use this to perform necessary web searches. "
+)
+
+async def get_playwright():
+    playwright = await async_playwright().start()
+    return playwright
 
 async def user_input_func(prompt: str, cancellation_token: CancellationToken | None = None) -> str:
     """Get user input from the UI for the user proxy agent."""
@@ -60,65 +135,93 @@ async def user_action_func(prompt: str, cancellation_token: CancellationToken | 
 
 @cl.on_chat_start  # type: ignore
 async def start_chat() -> None:
-
-    gpt_model = "gpt-4o-mini"
-    # gpt_model = "gpt-4.1-mini-2025-04-14"
-
     model_client = OpenAIChatCompletionClient(model=gpt_model)
 
     # Create agents
     agents = []
-
     user = UserProxyAgent(
-        name="User", 
-        description="The user agent.",
-        )
+            name="User",
+            description="The user agent.",
+            input_func=user_input_func,
+            )
     agents.append(user)
-    
+
+    attraction_idea_agent = AssistantAgent(
+        name="AttractionRecommender",
+        model_client=model_client,
+        description="Recommend top attractions for a given destination using general knowledge only, no web search. Include a short description of each attraction")
+    agents.append(attraction_idea_agent)
+
+    budget_checker_agent = AssistantAgent(
+        name="BudgetController",
+        model_client=model_client,
+        description="Compare total travel costs to the user-defined budget and say whether it fits.")
+    agents.append(budget_checker_agent)
+
+
+    AttractionLink_agent = AssistantAgent(
+        name="AttractionLinkFinder",
+        model_client=model_client,
+        tools=[search_tool],
+        description='''Using the search tool, return a link for every attraction (from the approved attraction list).
+        Post all links to the orchestrator''')
+    agents.append(AttractionLink_agent)
+
+    HotelLink_agent = AssistantAgent(
+        name="HotelLinkFinder",
+        model_client=model_client,
+        tools=[search_tool],
+        description='''Using the search tool, return a link for a hotel from the destination according to the chosen price range.
+        Post all links to the orchestrator''')
+    agents.append(HotelLink_agent)
+
+    FlightLink_agent = AssistantAgent(
+        name="FlightLinkFinder",
+        model_client=model_client,
+        tools=[search_tool],
+        description='''Using the search tool, return a link for flights to/from the destination according to the chosen price range.
+        Post all links to the orchestrator''')
+    agents.append(FlightLink_agent)
+
+
+    playwright = await get_playwright()
     surfer1 = MultimodalWebSurfer(
-        name="ActivityAdvisor",
-        model_client=model_client, 
-        #description="A web surfer agent that search for things to do in the destination. It also need to return the booking fee for each activity.",
-        description = '''List popular activities available at the destination and provide an estimated cost range for each activity. 
-                        Think step-by-step: identify activities first, then estimate typical costs. If cost information is unavailable, note it clearly. 
-                        Example: - Activity: City Sightseeing Tour, Cost: $50-70 - Activity: Museum Visit, Cost: $10-20.''',
-        start_page="https://www.tripadvisor.com/", 
-    )
+            name="ActivityPricer",
+            model_client=model_client,
+            #description="A web surfer agent that search for things to do in the destination. It also need to return the booking fee for each activity.",
+            description = '''
+            You are a web agent looking for pricing information on a webpage. Your input is a URL.
+
+            Scroll the page if necessary and extract any numeric values that represent prices for tickets, activities, or bookings.
+
+            Return the prices found in this format:
+            {
+            "estimated_price": "$30-40",
+            "notes": "Price for standard ticket. Based on visible listings on the page."
+            }
+
+            Do not return other descriptions or ratings unless price is unavailable. Only extract from visible page content.
+
+            ''',
+            playwright=playwright,
+        )
     agents.append(surfer1)
 
-    surfer2 = MultimodalWebSurfer(
-        name="AccomadationAdvisor",
-        model_client=model_client, 
-        #description="A web surfer agent that search for accommodation in the destination. It also need to return the booking fee for each accommodation.",
-        description = '''Search for accommodation options in the destination and provide the booking fee for each. 
-                        Think step-by-step: find several hotel or lodging options, then retrieve and list their booking prices. Include the name and a short description for each accommodation. 
-                        Example: - Hotel: Grand Palace Hotel, Booking Fee: $120/night - Hostel: City Center Backpackers, Booking Fee: $35/night.''',
+    schedule_maker = AssistantAgent(
+            name="ScheduleMaker",
+            model_client = model_client,
+            description="""You are a schedule maker and have extensive knowledge of travel route and map.
+            Based on the activities and destinations, create a daily itinerary:
+            1. Optimize routes between locations
+            2. Include travel times
+            3. Balance activities per day"""
+        )
+    agents.append(schedule_maker)
 
-        start_page="https://www.tripadvisor.com/", 
-    )
-    agents.append(surfer2)
-
-    surfer3 = MultimodalWebSurfer(
-        name="FlightsearchAgent",
-        model_client=model_client, 
-        #description="A web surfer agent that search for flight tickets(or other travel tools) in the destination. It also need to return the booking fee for each flight(or other travel methods).",
-        description = '''Search for available flight tickets or other transportation methods to the destination, and provide the booking fee for each option. 
-                        Think step-by-step: first find several transportation options, then retrieve their prices. Include departure location, transportation type, and cost. 
-                        Example: - Flight: New York to Paris, Airline: Air France, Booking Fee: $650 - Train: London to Paris, Booking Fee: $120.''',
-        start_page="https://www.tripadvisor.com/",
-    )
-    agents.append(surfer3)
-
-    assistant = AssistantAgent(
-        name="Assistant",
-        model_client=model_client,
-        description="A helpful assistant agent that prints out the options.",
-        # tools=
-    )
-    agents.append(assistant)
-
+    # Create a group chat
     cond1 = TextMentionTermination("TERMINATE")
-    team = MagenticOneGroupChat(agents, model_client=model_client, termination_condition=cond1)
+    external_termination = ExternalTermination()
+    team = MagenticOneGroupChat(agents, model_client=model_client, termination_condition=cond1 | external_termination)
 
     # Set the assistant agent in the user session.
     cl.user_session.set("prompt_history", "")  # type: ignore
@@ -142,109 +245,118 @@ async def set_starts() -> List[cl.Starter]:
         # ),
         cl.Starter(
             label="Travel Itinerary",
-            message="""
-            Task: Plan a Travel Itinerary
+            message= """
+    Task: Plan a Travel Itinerary
 
-            You will generate a detailed travel itinerary including the following information:
-            - Place of Departure (city, country)
-            - Destination
-            - Travel Dates (schedule)
-            - Accommodation
-            - Activities (things to do)
-            - Budget
+    You will generate a detailed travel itinerary including the following information:
+    - Place of Departure (city, country)
+    - Destination
+    - Travel Dates (schedule)
+    - Accommodation
+    - Activities (things to do)
+    - Budget
 
-            Use the Chain-of-Thought method by completing each task step-by-step, explicitly reasoning at each step. Provide a few-shot example for guidance.
+    Use the Chain-of-Thought method by completing each task step-by-step, explicitly reasoning at each step. Provide a few-shot example for guidance.
 
-            Step-by-Step Instruction:
+    Step-by-Step Instruction:
 
-            Step 1: Mandatory Information Collection
-            First, ask the user explicitly:
-            "Please tell me your place of departure (city and country). This is mandatory information to start planning your itinerary."
+    Step 1: Mandatory Information Collection
+    First, ask the user explicitly:
+    "Please tell me your place of departure (city and country). This is mandatory information to start planning your itinerary."
 
-            Reasoning: The itinerary cannot be planned without knowing the starting location. Ensure the user provides this information clearly.
+    Reasoning: The itinerary cannot be planned without knowing the starting location. Ensure the user provides this information clearly.
 
-            Few-shot Example:
-            Agent: Please tell me your place of departure (city and country). This is mandatory information.
-            User: Boston, USA
+    Few-shot Example:
+    Agent: Please tell me your place of departure (city and country). This is mandatory information.
+    User: Boston, USA
 
-            Step 2: Collect Additional Travel Information (with Recommendations)
-            Next, sequentially ask the user for destination, travel dates, and expected budget. When asking each question, always provide 3 recommendation options.
+    Step 2: Collect Additional Travel Information (with Recommendations)
+    Next, sequentially ask the user for destination, travel dates, and expected budget. When asking each question, always provide 3 recommendation options.
 
-            Reasoning: Providing options helps users make quicker and informed decisions.
+    Reasoning: Providing options helps users make quicker and informed decisions.
 
-            Few-shot Example:
-            Agent: Where would you like to travel? Here are three popular recommendations:
-            1. San Francisco, USA
-            2. New York City, USA
-            3. Miami, USA
-            User: I'd like to go to San Francisco, USA.
+    Few-shot Example:
+    Agent: Where would you like to travel? Here are three popular recommendations:
+    1. San Francisco, USA
+    2. New York City, USA
+    3. Miami, USA
+    User: I'd like to go to San Francisco, USA.
 
-            Agent: Great choice! What dates are you planning for your travel? Here are three recommended timeframes:
-            1. May 20 - May 27
-            2. June 10 - June 17
-            3. July 15 - July 22
-            User: June 10 - June 17
+    Agent: Great choice! What dates are you planning for your travel? Here are three recommended timeframes:
+    1. May 20 - May 27
+    2. June 10 - June 17
+    3. July 15 - July 22
+    User: June 10 - June 17
 
-            Agent: What's your expected budget for the entire trip? Here are three typical budget ranges:
-            1. Economy: $1,000 - $1,500
-            2. Moderate: $1,500 - $2,500
-            3. Luxury: $2,500+
-            User: Moderate, around $2,000
+    Agent: What's your expected budget for the entire trip? Here are three typical budget ranges:
+    1. Economy: $1,000 - $1,500
+    2. Moderate: $1,500 - $2,500
+    3. Luxury: $2,500+
+    User: Moderate, around $2,000
 
-            Step 3: Generate Activities and Accommodations
-            Use web search to identify suitable activities at the destination and accommodations based on the user's preferences and budget constraints. Clearly state your search criteria.
+    Step 3: Generate Activities and Accommodations
+    Now, you must use the attraction recommender to produce a list of attractions the user approves.
+    Then, give the approved list to the attraction link finder and request it to search for them one by one, only accept the search
+    results as links. Save the links. Then, using the destination, ask the hotel link finder to find appropriate accomodations and flights links
+    Only accept the name and link of the results. Save the links and pass flight links to flight finder, pass hotel links to
+    finder for flights.Pass the generated links to activity pricer and ask it to go through it one by one.
+    Save all information regarding pricing and pass to budget checker.
 
-            Reasoning: To provide accurate recommendations, you need to align activities and accommodations with the user's budget and interests.
+    Reasoning: To provide accurate recommendations, you need to align activities and accommodations with the user's budget and interests.
 
-            Few-shot Example:
-            Agent Search Criteria:
-            - Destination: San Francisco, USA
-            - Dates: June 10 - June 17
-            - Budget: Moderate (~$2,000)
-            - Activities: Popular tourist spots, cultural experiences
-            - Accommodations: Mid-range hotels or Airbnb
+    Few-shot Example:
+    Agent Search Criteria:
+    - Destination: San Francisco, USA
+    - Dates: June 10 - June 17
+    - Budget: Moderate (~$2,000)
+    - Activities: Popular tourist spots, cultural experiences
+    - Accommodations: Mid-range hotels or Airbnb
 
-            Sample Agent Output:
-            Activities:
-            1. Visit Golden Gate Bridge (Free)
-            2. Alcatraz Island Tour ($40)
-            3. Exploratorium ($30)
+    Sample Agent Output:
+    Activities:
+    1. Visit Golden Gate Bridge (Free)
+    2. Alcatraz Island Tour ($40)
+    3. Exploratorium ($30)
 
-            Accommodation Recommendation:
-            1. Holiday Inn Golden Gateway ($180/night)
-            2. Airbnb near Fisherman's Wharf ($150/night)
+    Accommodation Recommendation:
+    1. Holiday Inn Golden Gateway ($180/night)
+    2. Airbnb near Fisherman's Wharf ($150/night)
 
-            Step 4: Calculate and Present Budget Clearly
-            Calculate the total expected cost based on accommodation, activities, transportation, and daily expenses clearly.
+    Step 4: Calculate and Present Budget Clearly
+    Calculate the total expected cost based on accommodation, activities, transportation, and daily expenses clearly.
 
-            Reasoning: Users appreciate transparency and a clear breakdown of expenses.
+    Reasoning: Users appreciate transparency and a clear breakdown of expenses.
 
-            Few-shot Example:
-            Budget Breakdown:
-            - Flights (Round-trip): $400
-            - Accommodation (7 nights x $150): $1,050
-            - Activities: $70
-            - Meals and Miscellaneous: $400
-            - Total: ~$1,920
+    Few-shot Example:
+    Budget Breakdown:
+    - Flights (Round-trip): $400
+    - Accommodation (7 nights x $150): $1,050
+    - Activities: $70
+    - Meals and Miscellaneous: $400
+    - Total: ~$1,920
 
-            Step 5: Final Travel Plan Summary
-            Provide a concise and comprehensive summary of the travel itinerary.
+    Step 5: Final Travel Plan Summary
+    Provide a concise and comprehensive summary of the travel itinerary, then send to schedule making agent for final itinerary.
 
-            Reasoning: Summaries help users quickly understand and confirm the overall plan.
+    Reasoning: Summaries help users quickly understand and confirm the overall plan.
 
-            Few-shot Example:
-            Summary:
-            - Departure: Boston, USA
-            - Destination: San Francisco, USA
-            - Dates: June 10 - June 17
-            - Accommodation: Airbnb near Fisherman's Wharf
-            - Activities: Golden Gate Bridge, Alcatraz Tour, Exploratorium
-            - Total Budget: ~$1,920
-            """
+    Few-shot Example:
+    Summary:
+    - Departure: Boston, USA
+    - Destination: San Francisco, USA
+    - Dates: June 10 - June 17
+    - Accommodation: Airbnb near Fisherman’s Wharf
+    - Activities: Golden Gate Bridge, Alcatraz Tour, Exploratorium
+    - Total Budget: ~$1,920
+
+    Step 6:
+    Show final itinerary for user approval
+    Reasoning - the final result should align with the user's preferences
+    """
         ),
     ]
 
-@backoff.on_exception(backoff.expo, openai.RateLimitError)
+
 @cl.on_message  # type: ignore
 async def chat(message: cl.Message) -> None:
     # Get the team from the user session.
