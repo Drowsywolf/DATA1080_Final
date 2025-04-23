@@ -40,7 +40,7 @@ def search_booking_info(query: str) -> dict:
     """Search for booking info (activity/hotel/flight) and return name, link, cost, and note."""
     search = GoogleSearch({
         "q": query,
-        "api_key": "bd03bd408c8ff7a6d4a6de3eafc5d5f8568d8cba659ea02c14b913733abddb2b",
+        "api_key": serp_api_key,
         "hl": "en",
         "gl": "us"
     })
@@ -48,7 +48,7 @@ def search_booking_info(query: str) -> dict:
 
     booking_info = {
         "activity": query,
-        "link": "",
+        "link": "tripadvisor.com",
         "cost": "",
         "note": "No relevant link found"
     }
@@ -58,7 +58,8 @@ def search_booking_info(query: str) -> dict:
         link = result.get("link", "")
         if any(domain in link for domain in [
             "viator.com", "getyourguide.com", "booking.com",
-            "expedia.com", "trip.com", "kayak.com"
+            "expedia.com", "trip.com", "kayak.com", "tripadvisor.com", "bing.com",
+            "travelocity.com", "hotels.com", "airbnb.com", "skyscanner.com",
         ]):
             top_link = link
             break
