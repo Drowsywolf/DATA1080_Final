@@ -33,7 +33,7 @@ import requests
 from bs4 import BeautifulSoup
 from statistics import median
 from typing import List, Dict, Annotated
-serp_api_key = "bd03bd408c8ff7a6d4a6de3eafc5d5f8568d8cba659ea02c14b913733abddb2b"
+serp_api_key = "cfdd0170aa9f66b15819113418aac1b17b69b91195c39edfd90ca1183c5afb5f"
 gpt_model = "gpt-4o-mini"
 
 def search_booking_info(query: str) -> dict:
@@ -49,8 +49,6 @@ def search_booking_info(query: str) -> dict:
     booking_info = {
         "activity": query,
         "link": "tripadvisor.com",
-        "cost": "",
-        "note": "No relevant link found"
     }
 
     top_link = ""
@@ -68,27 +66,11 @@ def search_booking_info(query: str) -> dict:
         return booking_info
 
     try:
-        response = requests.get(top_link, timeout=10, headers={"User-Agent": "Mozilla/5.0"})
-        soup = BeautifulSoup(response.text, "html.parser")
-        text = soup.get_text(" ", strip=True)
-
-
-        prices = re.findall(r'[$€£]\s?(\d{1,4})', text)
-        prices = [int(p) for p in prices]
-
-        if prices:
-            prices.sort()
-            med = median(prices)
-            booking_info["cost"] = f"${min(prices)}–${max(prices)}"
-            booking_info["note"] = f"Estimated from {len(prices)} prices, median ≈ ${int(med)}"
-        else:
-            booking_info["note"] = "No prices found on page"
-
         booking_info["link"] = top_link
         return booking_info
 
     except Exception as e:
-        booking_info["note"] = f"Error scraping: {str(e)}"
+        booking_info["link"] = "bing.com"
         return booking_info
 
 search_tool = FunctionTool(
@@ -136,7 +118,7 @@ async def user_action_func(prompt: str, cancellation_token: CancellationToken | 
 
 @cl.on_chat_start  # type: ignore
 async def start_chat() -> None:
-    model_client = OpenAIChatCompletionClient(model=gpt_model)
+    model_client = OpenAIChatCompletionClient(model=gpt_model, temperature=0.7)
 
     # Create agents
     agents = []
@@ -153,6 +135,40 @@ async def start_chat() -> None:
         description="Recommend top attractions for a given destination using general knowledge only, no web search. Include a short description of each attraction")
     agents.append(attraction_idea_agent)
 
+
+    # playwright = await get_playwright()
+    # surfer1 = MultimodalWebSurfer(
+    #         name="ActivityPricer",
+    #         model_client=model_client,
+    #         #description="A web surfer agent that search for things to do in the destination. It also need to return the booking fee for each activity.",
+    #         description = '''
+    #         You are a web agent looking for pricing information on. Your input should be like: Estimate the price for XXX.
+            
+    #         You need to use web_search to find the web page of activities, hotels and flights, use summarize_page to summarize the page and extract the price information, and use sleep in the end each time.
+
+    #         Return the prices found in this format:
+    #         {
+    #         "estimated_price": "$30-40",
+    #         "notes": "Price for standard ticket. Based on visible listings on the page."
+    #         }
+
+    #         Do not return other descriptions or ratings unless price is unavailable. Only extract from visible page content.
+
+    #         ''',
+    #         playwright=playwright,
+    #     )
+    # agents.append(surfer1)
+
+    activity_pricer_agent = AssistantAgent(
+        name="ActivityPricer",
+        model_client=model_client,
+        tools=[search_tool],
+        description='''
+        You are a web agent looking for pricing information on activities.
+        '''
+    )
+    agents.append(activity_pricer_agent)
+
     budget_checker_agent = AssistantAgent(
         name="BudgetController",
         model_client=model_client,
@@ -167,6 +183,12 @@ async def start_chat() -> None:
         description='''Using the search tool, return a link for every attraction (from the approved attraction list).
         Post all links to the orchestrator''')
     agents.append(AttractionLink_agent)
+
+    attraction_name_summarizer = AssistantAgent(
+        name="AttractionNameSummarizer",
+        model_client=model_client,
+        description="Summarize the names of attractions and return them in a list format.")
+    agents.append(attraction_name_summarizer)
 
     HotelLink_agent = AssistantAgent(
         name="HotelLinkFinder",
@@ -184,30 +206,6 @@ async def start_chat() -> None:
         Post all links to the orchestrator''')
     agents.append(FlightLink_agent)
 
-
-    playwright = await get_playwright()
-    surfer1 = MultimodalWebSurfer(
-            name="ActivityPricer",
-            model_client=model_client,
-            #description="A web surfer agent that search for things to do in the destination. It also need to return the booking fee for each activity.",
-            description = '''
-            You are a web agent looking for pricing information on. 
-            
-            You need to use web_search to find the web page of activities, hotels and flights, use summarize_page to summarize the page and extract the price information, and use sleep in the end each time.
-
-            Return the prices found in this format:
-            {
-            "estimated_price": "$30-40",
-            "notes": "Price for standard ticket. Based on visible listings on the page."
-            }
-
-            Do not return other descriptions or ratings unless price is unavailable. Only extract from visible page content.
-
-            ''',
-            playwright=playwright,
-        )
-    agents.append(surfer1)
-
     schedule_maker = AssistantAgent(
             name="ScheduleMaker",
             model_client = model_client,
@@ -218,6 +216,7 @@ async def start_chat() -> None:
             3. Balance activities per day"""
         )
     agents.append(schedule_maker)
+
 
     # Create a group chat
     cond1 = TextMentionTermination("TERMINATE")
@@ -296,11 +295,11 @@ async def set_starts() -> List[cl.Starter]:
     User: Moderate, around $2,000
 
     Step 3: Generate Activities and Accommodations
-    Now, you must use the AttractionRecommender agent to produce a list of attractions(up to 5 attractions). Ask if the user approves of the list. Regenerate the list if the user does not approve.
-    Then, give the list to the AttractionLinkFinder agent and request it to search for them one by one, only accept the search
-    results as links. Save the links. Then, using the destination, ask the HotelLinkFinder to find appropriate accomodations and flights links
-    Only accept the name and link of the results. Save the links and pass flight links to FlightLinkFinder, pass hotel links to
-    finder for flights. Ask ActivityPricer about the price and go through it one by one.
+    Now, you must use the AttractionRecommender agent to produce a list of attractions(up to the number of trip days). Ask if the user approves of the list. Regenerate the list if the user does not approve.
+    Then, pass the activity names to ActivityPricer agent one by one to estimate budget for each activity.
+    Then, give the list to the AttractionLinkFinder agent to search for them one by one, and use AttractionNameSummarizer to summarize the attractions. 
+    Then, using the destination, ask the HotelLinkFinder and FlightLinkFinder to find appropriate accomodations and flights links
+    Only accept the name and link of the results. 
     Save all information regarding pricing and pass to BudgetController. 
     Remember to ask for the user's approval before proceeding.
 
@@ -354,11 +353,11 @@ async def set_starts() -> List[cl.Starter]:
     - Departure: Boston, USA
     - Destination: San Francisco, USA
     - Dates: June 10 - June 17
-    - Accommodation: Airbnb near Fisherman's Wharf
+    - Accommodation: Airbnb near Fisherman's Wharf ($150/night)
     - Activities: 
-            Golden Gate Bridge[Link1: ...], 
-            Alcatraz Tour[Link2: ...], 
-            Exploratorium[Link3: ...], 
+            Golden Gate Bridge($50)[Link1: ...], 
+            Alcatraz Tour($100)[Link2: ...], 
+            Exploratorium($20~30)[Link3: ...], 
             ...
     - Total Budget: ~$1,920
     Would you like to proceed with this plan? (yes/no)
