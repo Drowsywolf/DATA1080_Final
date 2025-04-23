@@ -129,83 +129,67 @@ async def start_chat() -> None:
             )
     agents.append(user)
 
-    attraction_idea_agent = AssistantAgent(
-        name="AttractionRecommender",
-        model_client=model_client,
-        description="Recommend top attractions for a given destination using general knowledge only, no web search. Include a short description of each attraction")
-    agents.append(attraction_idea_agent)
-
-
-    # playwright = await get_playwright()
-    # surfer1 = MultimodalWebSurfer(
-    #         name="ActivityPricer",
-    #         model_client=model_client,
-    #         #description="A web surfer agent that search for things to do in the destination. It also need to return the booking fee for each activity.",
-    #         description = '''
-    #         You are a web agent looking for pricing information on. Your input should be like: Estimate the price for XXX.
-            
-    #         You need to use web_search to find the web page of activities, hotels and flights, use summarize_page to summarize the page and extract the price information, and use sleep in the end each time.
-
-    #         Return the prices found in this format:
-    #         {
-    #         "estimated_price": "$30-40",
-    #         "notes": "Price for standard ticket. Based on visible listings on the page."
-    #         }
-
-    #         Do not return other descriptions or ratings unless price is unavailable. Only extract from visible page content.
-
-    #         ''',
-    #         playwright=playwright,
-    #     )
-    # agents.append(surfer1)
-
-    activity_pricer_agent = AssistantAgent(
-        name="ActivityPricer",
-        model_client=model_client,
-        tools=[search_tool],
-        description='''
-        You are a web agent looking for pricing information on activities.
-        '''
-    )
-    agents.append(activity_pricer_agent)
-
+    # Agent to check the budget
     budget_checker_agent = AssistantAgent(
         name="BudgetController",
         model_client=model_client,
         description="Compare total travel costs to the user-defined budget and say whether it fits.")
     agents.append(budget_checker_agent)
 
-
+    # Agent to search for attractions
     AttractionLink_agent = AssistantAgent(
         name="AttractionLinkFinder",
         model_client=model_client,
-        tools=[search_tool],
-        description='''Using the search tool, return a link for every attraction (from the approved attraction list).
-        Post all links to the orchestrator''')
+        tools=[search_top_sights],
+        description='''Using the search tool, recommend top attractions for a given destination,
+        enter departure and return dates in the format of YYYY-MM-DD.
+        Example:
+        Departure: Boston
+        Destination: Paris
+        Departure Date: 2025-04-24
+        Return Date: 2025-04-29
+        Return a number of attractions appropriate to the trip length based on top reviews. Read the json file and return the list with each entry having
+        attraction name, description, link, and price.''')
     agents.append(AttractionLink_agent)
 
-    attraction_name_summarizer = AssistantAgent(
-        name="AttractionNameSummarizer",
-        model_client=model_client,
-        description="Summarize the names of attractions and return them in a list format.")
-    agents.append(attraction_name_summarizer)
 
+    # Agent to search for hotels
     HotelLink_agent = AssistantAgent(
         name="HotelLinkFinder",
         model_client=model_client,
-        tools=[search_tool],
-        description='''Using the search tool, return a link for a hotel from the destination according to the chosen price range.
-        Post all links to the orchestrator''')
+        tools=[search_hotels],
+        description='''Using the search tool, return hotels from the destination according to the chosen price range,
+        enter departure and return dates in the format of YYYY-MM-DD.
+        Example:
+        Departure: Boston
+        Destination: Paris
+        Departure Date: 2025-04-24
+        Return Date: 2025-04-29
+        Read the json file and
+        return the list with each entry having
+        hotel name, description, link, and price.''')
     agents.append(HotelLink_agent)
 
+
+    # Agent to search for flights
     FlightLink_agent = AssistantAgent(
         name="FlightLinkFinder",
         model_client=model_client,
-        tools=[search_tool],
-        description='''Using the search tool, return a link for flights to/from the destination according to the chosen price range.
+        tools=[search_flights],
+        description='''Using the search tool, destinaton and departure must be entered in the format of 3 capital letters
+        enter departure and return dates in the format of YYYY-MM-DD.
+        Example:
+        Departure: BOS
+        Destination: AUS
+        Departure Date: 2025-04-24
+        Return Date: 2025-04-29
+        Return flights to and from the destination according to the chosen price range.
+        Read the json file and return the list with each entry having
+        flight name, description, link, and price.
         Post all links to the orchestrator''')
     agents.append(FlightLink_agent)
 
+    # Agent to schedule the trip
     schedule_maker = AssistantAgent(
             name="ScheduleMaker",
             model_client = model_client,
@@ -283,10 +267,10 @@ async def set_starts() -> List[cl.Starter]:
     User: I'd like to go to San Francisco, USA.
 
     Agent: Great choice! What dates are you planning for your travel? Here are three recommended timeframes:
-    1. May 20 - May 22
-    2. June 10 - June 15
-    3. July 15 - July 29
-    User: June 10 - June 11
+    1. May 20 - May 22, 2025
+    2. June 10 - June 15, 2025
+    3. July 15 - July 29, 2025
+    User: June 10 - June 11, 2025
 
     Agent: What's your expected budget for the entire trip? Here are three typical budget ranges:
     1. Economy: $1,000 - $1,500
@@ -294,14 +278,17 @@ async def set_starts() -> List[cl.Starter]:
     3. Luxury: $2,500+
     User: Moderate, around $2,000
 
-    Step 3: Generate Activities and Accommodations
-    Now, you must use the AttractionRecommender agent to produce a list of attractions(up to the number of trip days). Ask if the user approves of the list. Regenerate the list if the user does not approve.
-    Then, pass the activity names to ActivityPricer agent one by one to estimate budget for each activity.
-    Then, give the list to the AttractionLinkFinder agent to search for them one by one, and use AttractionNameSummarizer to summarize the attractions. 
-    Then, using the destination, ask the HotelLinkFinder and FlightLinkFinder to find appropriate accomodations and flights links
-    Only accept the name and link of the results. 
-    Save all information regarding pricing and pass to BudgetController. 
-    Remember to ask for the user's approval before proceeding.
+    Step 3: Generate Flights, Activities and Accommodations
+    Now, you must use the attraction agent to produce a list of attractions.
+    Then, using the destination, ask the hotel finder to find appropriate accomodations and
+    flight finder for flights.
+    You must wait for user's approval of the list before proceeding to next steps.
+    Few-shot Example:
+    Agent: Here are three popular recommendations, would you like to make any changes?
+    1. Eiffle Tower, rating: 4.9, price: $10
+    2. The Louvre, rating: 4.9, price: $10
+    3. Triumph Arc, rating: 4.9, price: $10
+    User: I'd like to go to the first two.
 
     Reasoning: To provide accurate recommendations, you need to align activities and accommodations with the user's budget and interests.
 
@@ -311,6 +298,7 @@ async def set_starts() -> List[cl.Starter]:
     - Dates: June 10 - June 17
     - Budget: Moderate (~$2,000)
     - Activities: Popular tourist spots, cultural experiences
+    - Transportation: Round-trip flights
     - Accommodations: Mid-range hotels or Airbnb
 
     Sample Agent Output:
@@ -322,9 +310,6 @@ async def set_starts() -> List[cl.Starter]:
     Accommodation Recommendation:
     1. Holiday Inn Golden Gateway ($180/night)
     2. Airbnb near Fisherman's Wharf ($150/night)
-
-    Would you like to proceed with this plan? (yes/no)
-    User: Yes
 
     Step 4: Calculate and Present Budget Clearly
     Once all information is collected, calculate the total expected cost based on accommodation, activities, transportation, and daily expenses clearly.
