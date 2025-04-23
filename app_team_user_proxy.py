@@ -327,23 +327,20 @@ async def set_starts() -> List[cl.Starter]:
     User: Yes
 
     Step 4: Calculate and Present Budget Clearly
-    Calculate the total expected cost based on accommodation, activities, transportation, and daily expenses clearly.
+    Once all information is collected, calculate the total expected cost based on accommodation, activities, transportation, and daily expenses clearly.
 
     Reasoning: Users appreciate transparency and a clear breakdown of expenses.
 
     Few-shot Example:
-    Agent:
     Budget Breakdown:
     - Flights (Round-trip): $400
     - Accommodation (7 nights x $150): $1,050
     - Activities: $70
     - Meals and Miscellaneous: $400
     - Total: ~$1,920
-    Would you like to proceed with this plan? (yes/no)
-    User: Yes
 
     Step 5: Final Travel Plan Summary
-    Provide a concise and comprehensive summary of the travel itinerary, ask if the user approve of the summary, then send to schedule making agent for final itinerary.
+    Provide a concise and comprehensive summary of the travel itinerary, ask if the user approve of the summary, then send to schedule making agent for final itinerary. Remember to include links to the activities, hotels, and flights.
 
     Reasoning: Summaries help users quickly understand and confirm the overall plan.
 
@@ -353,12 +350,13 @@ async def set_starts() -> List[cl.Starter]:
     - Departure: Boston, USA
     - Destination: San Francisco, USA
     - Dates: June 10 - June 17
-    - Accommodation: Airbnb near Fisherman's Wharf ($150/night)
+    - Accommodation: Airbnb near Fisherman's Wharf[Link: ...],
     - Activities: 
-            Golden Gate Bridge($50)[Link1: ...], 
-            Alcatraz Tour($100)[Link2: ...], 
-            Exploratorium($20~30)[Link3: ...], 
+            Golden Gate Bridge[Link1: ...], 
+            Alcatraz Tour[Link2: ...], 
+            Exploratorium[Link3: ...], 
             ...
+    - Flights: Round-trip from Boston to San Francisco[Link: ...]
     - Total Budget: ~$1,920
     Would you like to proceed with this plan? (yes/no)
     User: Yes
