@@ -36,52 +36,58 @@ from typing import List, Dict, Annotated
 serp_api_key = "cfdd0170aa9f66b15819113418aac1b17b69b91195c39edfd90ca1183c5afb5f"
 gpt_model = "gpt-4o-mini"
 
-def search_booking_info(query: str) -> dict:
-    """Search for booking info (activity/hotel/flight) and return name, link, cost, and note."""
-    search = GoogleSearch({
-        "q": query,
+# Tools
+## tool to search for attactions
+def search_top_sights(destination: str):
+    """Returns popular tourist attractions at a given destination using SerpAPI's Top Sights API."""
+    params = {
+        "engine": "google",
+        "q": f"Top sights in {destination}",
         "api_key": serp_api_key,
-        "hl": "en",
-        "gl": "us"
-    })
-    results = search.get_dict()
-
-    booking_info = {
-        "activity": query,
-        "link": "tripadvisor.com",
     }
+    search = GoogleSearch(params)
+    results = search.get_dict()
+    top_sights = results["top_sights"]
+    return top_sights
 
-    top_link = ""
-    for result in results.get("organic_results", []):
-        link = result.get("link", "")
-        if any(domain in link for domain in [
-            "viator.com", "getyourguide.com", "booking.com",
-            "expedia.com", "trip.com", "kayak.com", "tripadvisor.com", "bing.com",
-            "travelocity.com", "hotels.com", "airbnb.com", "skyscanner.com",
-        ]):
-            top_link = link
-            break
+## tool to search for hotels
+def search_hotels(destination: str, check_in_date: str, check_out_date: str):
+    """Returns popular hotels at a given destination using SerpAPI's Top Sights API."""
+    params = {
+    "engine": "google_hotels",
+    "q": f"{destination} hotels",
+    "check_in_date": check_in_date,
+    "check_out_date": check_out_date,
+    "currency": "USD",
+    "gl": "us",
+    "hl": "en",
+    "api_key": serp_api_key
+    }
+    search = GoogleSearch(params)
+    results = search.get_dict()
+    return results
 
-    if not top_link:
-        return booking_info
-
-    try:
-        booking_info["link"] = top_link
-        return booking_info
-
-    except Exception as e:
-        booking_info["link"] = "bing.com"
-        return booking_info
-
-search_tool = FunctionTool(
-    name="search_booking_info",
-    func=search_booking_info,
-    description="Use this to perform necessary web searches. "
-)
+## tool to search for flights
+def search_flights(departure: str, destination: str, depart_date: str, return_date: str):
+    """Returns flights from departure point to destination SerpAPI's Top Sights API."""
+    params = {
+    "engine": "google_flights",
+    "departure_id": departure,
+    "arrival_id": destination,
+    "outbound_date": depart_date,
+    "return_date": return_date,
+    "currency": "USD",
+    "hl": "en",
+    "api_key": serp_api_key
+    }
+    search = GoogleSearch(params)
+    results = search.get_dict()
+    return results
 
 async def get_playwright():
     playwright = await async_playwright().start()
     return playwright
+
 
 async def user_input_func(prompt: str, cancellation_token: CancellationToken | None = None) -> str:
     """Get user input from the UI for the user proxy agent."""
@@ -189,19 +195,6 @@ async def start_chat() -> None:
         Post all links to the orchestrator''')
     agents.append(FlightLink_agent)
 
-    # Agent to schedule the trip
-    schedule_maker = AssistantAgent(
-            name="ScheduleMaker",
-            model_client = model_client,
-            description="""You are a schedule maker and have extensive knowledge of travel route and map.
-            Based on the activities and destinations, create a daily itinerary:
-            1. Optimize routes between locations
-            2. Include travel times
-            3. Balance activities per day"""
-        )
-    agents.append(schedule_maker)
-
-
     # Create a group chat
     cond1 = TextMentionTermination("TERMINATE")
     external_termination = ExternalTermination()
@@ -248,7 +241,7 @@ async def set_starts() -> List[cl.Starter]:
     First, ask the user explicitly:
     "Please tell me your place of departure (city and country). This is mandatory information to start planning your itinerary."
 
-    Reasoning: The itinerary cannot be planned without knowing the starting location. Ensure the user provides this information clearly. Do not excute this step after the user gives a feasible answer.
+    Reasoning: The itinerary cannot be planned without knowing the starting location. Ensure the user provides this information clearly.
 
     Few-shot Example:
     Agent: Please tell me your place of departure (city and country). This is mandatory information.
@@ -257,7 +250,7 @@ async def set_starts() -> List[cl.Starter]:
     Step 2: Collect Additional Travel Information (with Recommendations)
     Next, sequentially ask the user for destination, travel dates, and expected budget. When asking each question, always provide 3 recommendation options.
 
-    Reasoning: Providing options helps users make quicker and informed decisions. Do not excute this step after the user gives a feasible answer.
+    Reasoning: Providing options helps users make quicker and informed decisions.
 
     Few-shot Example:
     Agent: Where would you like to travel? Here are three popular recommendations:
@@ -267,10 +260,10 @@ async def set_starts() -> List[cl.Starter]:
     User: I'd like to go to San Francisco, USA.
 
     Agent: Great choice! What dates are you planning for your travel? Here are three recommended timeframes:
-    1. May 20 - May 22, 2025
-    2. June 10 - June 15, 2025
-    3. July 15 - July 29, 2025
-    User: June 10 - June 11, 2025
+    1. May 20 - May 27
+    2. June 10 - June 17
+    3. July 15 - July 22
+    User: June 10 - June 17
 
     Agent: What's your expected budget for the entire trip? Here are three typical budget ranges:
     1. Economy: $1,000 - $1,500
@@ -278,17 +271,24 @@ async def set_starts() -> List[cl.Starter]:
     3. Luxury: $2,500+
     User: Moderate, around $2,000
 
-    Step 3: Generate Flights, Activities and Accommodations
+    Step 3: Generate Activities and Accommodations
     Now, you must use the attraction agent to produce a list of attractions.
-    Then, using the destination, ask the hotel finder to find appropriate accomodations and
-    flight finder for flights.
     You must wait for user's approval of the list before proceeding to next steps.
     Few-shot Example:
     Agent: Here are three popular recommendations, would you like to make any changes?
-    1. Eiffle Tower, rating: 4.9, price: $10
-    2. The Louvre, rating: 4.9, price: $10
-    3. Triumph Arc, rating: 4.9, price: $10
-    User: I'd like to go to the first two.
+    1. Eiffle Tower, rating: 4.9, price: $10,
+    2. The Louvre, rating: 4.9, price: $10,
+    3. Triumph Arc, rating: 4.9, price: free,
+    User: I'd like to go to the first two. Then, given the approved options, use the activity booking agent to find appropriate booking links for each attraction.
+    Few-shot Example:
+    Agent: Here are the booking links for these attractions:
+    1. Eiffle Tower, rating: 4.9, price: $10, book at "https://www.getyourguide.com/-l2600/?cmp=ga&cq_src=google_ads&cq_cmp=22393335569&cq_con=180057014769&cq_term=eiffel%20tower%20tickets"
+    2. The Louvre, rating: 4.9, price: $10, book at "https://www.louvre.fr/en"
+
+
+    Then, using the destination, ask the hotel finder to find appropriate accomodations and
+    flight finder for flights .
+
 
     Reasoning: To provide accurate recommendations, you need to align activities and accommodations with the user's budget and interests.
 
@@ -298,18 +298,17 @@ async def set_starts() -> List[cl.Starter]:
     - Dates: June 10 - June 17
     - Budget: Moderate (~$2,000)
     - Activities: Popular tourist spots, cultural experiences
-    - Transportation: Round-trip flights
     - Accommodations: Mid-range hotels or Airbnb
 
     Sample Agent Output:
     Activities:
-    1. Visit Golden Gate Bridge (Free)
-    2. Alcatraz Island Tour ($40)
-    3. Exploratorium ($30)
+    1. Visit Golden Gate Bridge (Free), no need to book.
+    2. Alcatraz Island Tour ($40), book at [link]
+    3. Exploratorium ($30), book at [link]
 
     Accommodation Recommendation:
-    1. Holiday Inn Golden Gateway ($180/night)
-    2. Airbnb near Fisherman's Wharf ($150/night)
+    1. Holiday Inn Golden Gateway ($180/night), book at [link,]
+    2. Airbnb near Fisherman's Wharf ($150/night) book at [link]
 
     Step 4: Calculate and Present Budget Clearly
     Once all information is collected, calculate the total expected cost based on accommodation, activities, transportation, and daily expenses clearly.
@@ -325,29 +324,59 @@ async def set_starts() -> List[cl.Starter]:
     - Total: ~$1,920
 
     Step 5: Final Travel Plan Summary
-    Provide a concise and comprehensive summary of the travel itinerary, ask if the user approve of the summary, then send to schedule making agent for final itinerary. Remember to include links to the activities, hotels, and flights.
+    Provide a concise and comprehensive summary of the travel itinerary.
 
     Reasoning: Summaries help users quickly understand and confirm the overall plan.
 
     Few-shot Example:
-    Agent:
-    Here is your travel itinerary summary:
+    Summary:
     - Departure: Boston, USA
     - Destination: San Francisco, USA
     - Dates: June 10 - June 17
-    - Accommodation: Airbnb near Fisherman's Wharf[Link: ...],
-    - Activities: 
-            Golden Gate Bridge[Link1: ...], 
-            Alcatraz Tour[Link2: ...], 
-            Exploratorium[Link3: ...], 
-            ...
-    - Flights: Round-trip from Boston to San Francisco[Link: ...]
+    - Accommodation: Airbnb near Fisherman’s Wharf
+    - Activities: Golden Gate Bridge, Alcatraz Tour, Exploratorium (with links attached)
     - Total Budget: ~$1,920
-    Would you like to proceed with this plan? (yes/no)
-    User: Yes
 
     Step 6:
-    Show final itinerary, and then ask if the user wants any changes.
+    Make the final, detailed itinerary and shows flight dates, hotel check-ins, and activity planned for each day
+    Show final itinerary and get final user approval.
+    Few-shot Example:
+    Agent: Here is the final itinerary:
+    - **Departure:** Boston, USA
+- **Destination:** Los Angeles, USA
+- **Travel Dates:** May 20 - May 24, 2025
+- **Accommodation:** Vibrant Studio Retreat Near DTLA Attractions
+  - Price: $516 for 4 nights
+  - Check-in: May 20, Check-out: May 25
+  - [View Accommodation](https://www.expedia.com/Hotel.h114487924.Hotel-Information?mdpcid=META.HPA.WEB-ORGANIC.VR)
+
+### Activities:
+1. **Griffith Observatory** ("https://griffithobservatory.org")
+   - Date: May 21
+   - Time: 10:00 AM - 12:00 PM
+   - **Cost:** Free
+2. **Hollywood Sign**
+   - Date: May 21
+   - Time: 1:00 PM - 3:00 PM
+   - **Cost:** Free
+3. **Universal Studios Hollywood** ("https://www.universalstudioshollywood.com/web/en/us/theme-park-ticket-deals?")
+   - Time: 9:00 AM - 5:00 PM
+   - **Cost:** $109
+
+### Budget Breakdown:
+- **Flights (Round-trip):** $191
+- **Accommodation:** $516 (for 5 nights)
+- **Activities:** $137 ($109 for Universal Studios + $28 for LACMA)
+
+#### **Total Estimated Cost:**
+- Total: $844
+- **Remaining Budget:** $1,156 (from your budget of $2,000)
+
+### Daily Itinerary:
+- **Day 1 (May 20):** Arrival in LA, check into accommodation, enjoy dinner nearby.
+- **Day 2 (May 21):** Visit Griffith Observatory and the Hollywood Sign.
+- **Day 3 (May 22):** Full day of fun at Universal Studios Hollywood.
+- **Day 4 (May 22):** Last-minute activities or departure preparations.
     Reasoning - the final result should align with the user's preferences
     """
         ),
